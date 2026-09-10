@@ -1,0 +1,44 @@
+#VRML_SIM R2025a utf8
+
+EXTERNPROTO "https://raw.githubusercontent.com/cyberbotics/webots/R2025a/projects/objects/backgrounds/protos/TexturedBackground.proto"
+EXTERNPROTO "https://raw.githubusercontent.com/cyberbotics/webots/R2025a/projects/objects/backgrounds/protos/TexturedBackgroundLight.proto"
+EXTERNPROTO "https://raw.githubusercontent.com/cyberbotics/webots/R2025a/projects/objects/floors/protos/RectangleArena.proto"
+EXTERNPROTO "https://raw.githubusercontent.com/cyberbotics/webots/R2025a/projects/appearances/protos/Grass.proto"
+EXTERNPROTO "../protos/LawnMower.proto"
+
+
+WorldInfo {
+  basicTimeStep 16
+}
+
+
+Viewpoint {
+  orientation -0.5770915080312369 0.5734959228517877 0.5814359963320204 2.0937055312208526
+  position 0.014000677916610943 0 3.0207965088880626
+  description "Stage 1 - Empty Lawn"
+}
+
+
+TexturedBackground {
+}
+
+
+TexturedBackgroundLight {
+}
+
+
+RectangleArena {
+  floorSize 20 20
+  floorTileSize 2 2
+  floorAppearance Grass {
+  }
+  wallHeight 0.5
+}
+
+
+LawnMower {
+  translation 0.20 0.20 0.10
+  rotation 1 0 0 1.5707963
+  name "LawnMower"
+  controller "mower_controller"
+}
