@@ -37,7 +37,7 @@ RectangleArena {
 
 
 LawnMower {
-  translation 0.20 0.20 0.10
+  translation 8.50 0.20 8.50
   rotation 1 0 0 1.5707963
   name "LawnMower"
   controller "mower_controller"
