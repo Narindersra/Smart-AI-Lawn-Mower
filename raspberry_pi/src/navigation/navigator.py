@@ -1,116 +1,267 @@
 import math
 
-from .navigation_types import RobotPose, Waypoint, MotionCommand
+from .navigation_types import (
+    RobotPose,
+    Waypoint,
+    Path,
+    MotionCommand,
+)
+
+from .heading_controller import HeadingController
+from .speed_controller import SpeedController
+from .navigation_state_machine import (
+    NavigationState,
+    NavigationStateMachine,
+)
 
 
 class Navigator:
-    """Basic waypoint navigation for a differential-drive robot."""
 
     def __init__(
         self,
-        max_velocity=2.0,
-        max_turn_velocity=1.0,
+        differential_drive,
+        heading_controller=None,
+        speed_controller=None,
         position_tolerance=0.15,
-        heading_tolerance=0.10,
     ):
-        self.max_velocity = max_velocity
-        self.max_turn_velocity = max_turn_velocity
-        self.position_tolerance = position_tolerance
-        self.heading_tolerance = heading_tolerance
+        self.differential_drive = differential_drive
 
-        self.target = None
-        self.finished = False
-
-    def set_waypoint(self, waypoint):
-        """Set a new navigation target."""
-
-        self.target = waypoint
-        self.finished = False
-
-    @staticmethod
-    def normalize_angle(angle):
-        """Normalize angle to [-pi, pi]."""
-
-        while angle > math.pi:
-            angle -= 2.0 * math.pi
-
-        while angle < -math.pi:
-            angle += 2.0 * math.pi
-
-        return angle
-
-    def update(self, pose):
-        """
-        Calculate wheel velocities required to reach the waypoint.
-        """
-
-        if self.target is None:
-            return MotionCommand(0.0, 0.0)
-
-        if self.finished:
-            return MotionCommand(0.0, 0.0)
-
-        dx = self.target.x - pose.x
-        dz = self.target.z - pose.z
-
-        distance = math.sqrt(dx * dx + dz * dz)
-
-        # ----------------------------------------------------
-        # TARGET REACHED
-        # ----------------------------------------------------
-
-        if distance <= self.position_tolerance:
-            self.finished = True
-            return MotionCommand(0.0, 0.0)
-
-        # ----------------------------------------------------
-        # DESIRED HEADING
-        # ----------------------------------------------------
-
-        desired_heading = math.atan2(dz, dx)
-
-        heading_error = self.normalize_angle(
-            desired_heading - pose.heading
+        self.heading_controller = (
+            heading_controller
+            if heading_controller is not None
+            else HeadingController()
         )
 
+        self.speed_controller = (
+            speed_controller
+            if speed_controller is not None
+            else SpeedController(
+                position_tolerance=position_tolerance
+            )
+        )
+
+        self.position_tolerance = abs(
+            position_tolerance
+        )
+
+        self.state_machine = (
+            NavigationStateMachine()
+        )
+
+        self.path = None
+        self.current_waypoint_index = 0
+
+    def set_path(self, path):
+        self.path = path
+        self.current_waypoint_index = 0
+
+    def start(self):
+        if (
+            self.path is None
+            or not self.path.waypoints
+        ):
+            self.state_machine.path_complete()
+            return
+
+        self.current_waypoint_index = 0
+        self.state_machine.start()
+
+    def get_state(self):
+        return self.state_machine.get_state()
+
+    def get_current_waypoint_index(self):
+        return self.current_waypoint_index
+
+    def get_current_waypoint(self):
+        if self.path is None:
+            return None
+
+        if (
+            self.current_waypoint_index
+            >= len(self.path.waypoints)
+        ):
+            return None
+
+        return self.path.waypoints[
+            self.current_waypoint_index
+        ]
+
+    @staticmethod
+    def calculate_distance(
+        pose,
+        waypoint,
+    ):
+        dx = waypoint.x - pose.x
+        dz = waypoint.z - pose.z
+
+        return math.hypot(
+            dx,
+            dz,
+        )
+
+    def is_complete(self):
+        return (
+            self.state_machine.get_state()
+            == NavigationState.PATH_COMPLETE
+        )
+
+    def _advance_waypoint(self):
+        
+        self.current_waypoint_index += 1
+    
+        if (
+            self.path is None
+            or self.current_waypoint_index
+            >= len(self.path.waypoints)
+        ):
+            self.state_machine.path_complete()
+            return False
+    
+        self.state_machine.start()
+    
+        return True
+
+    def update(self, pose):
+
         # ----------------------------------------------------
-        # TURN IN PLACE IF HEADING ERROR IS LARGE
+        # NO PATH
         # ----------------------------------------------------
 
-        if abs(heading_error) > self.heading_tolerance:
-
-            turn = self.max_turn_velocity
-
-            if heading_error > 0:
-                return MotionCommand(
-                    -turn,
-                    turn
-                )
+        if self.path is None:
+            self.state_machine.set_error()
 
             return MotionCommand(
-                turn,
-                -turn
+                linear_velocity=0.0,
+                angular_velocity=0.0,
             )
 
         # ----------------------------------------------------
-        # FORWARD MOTION
+        # PATH COMPLETE
         # ----------------------------------------------------
 
-        velocity = self.max_velocity
+        if self.is_complete():
+            return MotionCommand(
+                linear_velocity=0.0,
+                angular_velocity=0.0,
+            )
 
-        # Slow down when approaching target.
-        if distance < 0.5:
-            velocity = self.max_velocity * (distance / 0.5)
+        # ----------------------------------------------------
+        # CURRENT WAYPOINT
+        # ----------------------------------------------------
 
-        # Keep velocity within safe limits.
-        velocity = max(0.0, min(velocity, self.max_velocity))
+        waypoint = self.get_current_waypoint()
 
-        return MotionCommand(
-            velocity,
-            velocity
+        if waypoint is None:
+            self.state_machine.path_complete()
+
+            return MotionCommand(
+                linear_velocity=0.0,
+                angular_velocity=0.0,
+            )
+
+        # ----------------------------------------------------
+        # DISTANCE TO WAYPOINT
+        # ----------------------------------------------------
+
+        distance = self.calculate_distance(
+            pose,
+            waypoint,
         )
 
-    def is_finished(self):
-        """Return True when the current waypoint has been reached."""
+        # ----------------------------------------------------
+        # WAYPOINT REACHED
+        # ----------------------------------------------------
 
-        return self.finished
+        if distance <= self.position_tolerance:
+
+            self.state_machine.waypoint_reached()
+
+            if not self._advance_waypoint():
+
+                return MotionCommand(
+                    linear_velocity=0.0,
+                    angular_velocity=0.0,
+                )
+
+            waypoint = (
+                self.get_current_waypoint()
+            )
+
+            if waypoint is None:
+                return MotionCommand(
+                    linear_velocity=0.0,
+                    angular_velocity=0.0,
+                )
+
+            distance = self.calculate_distance(
+                pose,
+                waypoint,
+            )
+
+        # ----------------------------------------------------
+        # HEADING ERROR
+        # ----------------------------------------------------
+
+        heading_error = (
+            self.heading_controller
+            .calculate_heading_error(
+                pose,
+                waypoint,
+            )
+        )
+
+        # ----------------------------------------------------
+        # ALIGNMENT
+        # ----------------------------------------------------
+
+        if abs(heading_error) > (
+            self.heading_controller.heading_tolerance
+        ):
+
+            self.state_machine.start()
+
+            return self.heading_controller.update(
+                pose,
+                waypoint,
+            )
+
+        # ----------------------------------------------------
+        # ALIGNED → DRIVE
+        # ----------------------------------------------------
+
+        self.state_machine.start_driving()
+
+        speed = (
+            self.speed_controller.calculate_speed(
+                distance
+            )
+        )
+
+        # ----------------------------------------------------
+        # SAFETY STOP
+        # ----------------------------------------------------
+
+        if speed <= 0.0:
+
+            self.state_machine.waypoint_reached()
+
+            if not self._advance_waypoint():
+
+                return MotionCommand(
+                    linear_velocity=0.0,
+                    angular_velocity=0.0,
+                )
+
+            return MotionCommand(
+                linear_velocity=0.0,
+                angular_velocity=0.0,
+            )
+
+        # ----------------------------------------------------
+        # DRIVE STRAIGHT TOWARD WAYPOINT
+        # ----------------------------------------------------
+
+        return MotionCommand(
+            linear_velocity=speed,
+            angular_velocity=0.0,
+        )

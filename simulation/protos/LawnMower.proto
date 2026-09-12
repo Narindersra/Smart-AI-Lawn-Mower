@@ -1,10 +1,26 @@
 #VRML_SIM R2025a utf8
 
+# Smart AI Lawn Mower
+# Front  = caster wheel side (-X)
+# Rear   = two drive wheels side (+X)
+#
+# Sensors:
+# 3 front distance sensors
+# 1 rear distance sensor
+# 2 wheel encoders
+# 1 IMU
+# 1 GPS
+# 1 Camera
+#
+# All sensors are invisible.
+# Existing body and physics structure preserved.
+
 PROTO LawnMower [
-  field SFVec3f    translation 0 0 0
-  field SFRotation rotation    0 1 0 0
-  field SFString   name        "LawnMower"
-  field SFString   controller "<none>"
+  field SFVec3f    translation  0 0 0.10
+  field SFRotation rotation     0 0 1 0
+  field SFString   name         "LawnMower"
+  field SFFloat    bodyMass     1
+  field SFString   controller   "<none>"
 ]
 {
   Robot {
@@ -15,295 +31,294 @@ PROTO LawnMower [
 
     children [
 
-      # ============================================================
-      # MAIN CHASSIS
-      #
-      # X = forward
-      # Y = up
-      # Z = left/right
-      #
-      # WORLD SIZE:
-      # X = 0.50 m
-      # Y = 0.15 m
-      # Z = 0.40 m
-      #
-      # Chassis bottom is raised above ground so it does not
-      # become the primary ground-contact body.
-      # ============================================================
-      Pose {
-        translation 0 0.12 0
+      # =========================================================
+      # MAIN BODY
+      # =========================================================
 
-        children [
-          Shape {
-            appearance PBRAppearance {
-              baseColor 0 0.4 0.8
-              roughness 0.5
-            }
+      DEF BODY Shape {
+        appearance PBRAppearance {
+          baseColor 0.20 0.60 0.20
+          roughness 1
+          metalness 0
+        }
 
-            geometry Box {
-              size 0.50 0.15 0.40
-            }
-          }
-        ]
+        geometry Box {
+          size 0.50 0.40 0.12
+        }
       }
 
 
-      # ============================================================
-      # LEFT DRIVE WHEEL
-      #
-      # WORLD:
-      # X = +0.10
-      # Y = +0.08
-      # Z = +0.22
-      #
-      # Wheel axle = Z
-      # Cylinder default axis = Z
-      # Therefore NO extra wheel rotation is required.
-      # ============================================================
-      HingeJoint {
+      # =========================================================
+      # REAR RIGHT DRIVE WHEEL
+      # =========================================================
+
+      DEF WHEEL1 HingeJoint {
         jointParameters HingeJointParameters {
-          anchor 0.10 0.08 0.22
-          axis 0 0 1
+          axis 0 1 0
+          anchor 0.22 0.22 0
         }
 
         device [
           RotationalMotor {
-            name "left_wheel_motor"
-            maxVelocity 15
-            maxTorque 20
+            name "wheel1"
           }
 
           PositionSensor {
-            name "left_wheel_encoder"
+            name "encoder1"
           }
         ]
 
         endPoint Solid {
-          name "left_wheel"
-          translation 0.10 0.08 0.22
+          translation 0.22 0.22 0
+          rotation 1 0 0 1.5708
 
           children [
-            Shape {
+            DEF WHEEL Shape {
               appearance PBRAppearance {
-                baseColor 0.1 0.1 0.1
-                roughness 0.8
+                baseColor 0.10 0.10 0.10
+                roughness 1
+                metalness 0
               }
 
               geometry Cylinder {
-                height 0.04
-                radius 0.08
+                height 0.05
+                radius 0.10
+                subdivision 24
               }
             }
           ]
 
-          boundingObject Cylinder {
-            height 0.04
-            radius 0.08
-          }
+          boundingObject USE WHEEL
 
-          physics Physics {}
+          physics Physics {
+          }
         }
       }
 
 
-      # ============================================================
-      # RIGHT DRIVE WHEEL
-      #
-      # WORLD:
-      # X = +0.10
-      # Y = +0.08
-      # Z = -0.22
-      #
-      # Wheel axle = Z
-      # ============================================================
-      HingeJoint {
+      # =========================================================
+      # REAR LEFT DRIVE WHEEL
+      # =========================================================
+
+      DEF WHEEL2 HingeJoint {
         jointParameters HingeJointParameters {
-          anchor 0.10 0.08 -0.22
-          axis 0 0 1
+          axis 0 1 0
+          anchor 0.22 -0.22 0
         }
 
         device [
           RotationalMotor {
-            name "right_wheel_motor"
-            maxVelocity 15
-            maxTorque 20
+            name "wheel2"
           }
 
           PositionSensor {
-            name "right_wheel_encoder"
+            name "encoder2"
           }
         ]
 
         endPoint Solid {
-          name "right_wheel"
-          translation 0.10 0.08 -0.22
+          translation 0.22 -0.22 0
+          rotation 1 0 0 1.5708
 
           children [
-            Shape {
-              appearance PBRAppearance {
-                baseColor 0.1 0.1 0.1
-                roughness 0.8
-              }
-
-              geometry Cylinder {
-                height 0.04
-                radius 0.08
-              }
-            }
+            USE WHEEL
           ]
 
-          boundingObject Cylinder {
-            height 0.04
-            radius 0.08
-          }
+          name "rear_left_wheel"
 
-          physics Physics {}
+          boundingObject USE WHEEL
+
+          physics Physics {
+          }
         }
       }
 
 
-      # ============================================================
-      # REAR CASTER
-      #
-      # X = -0.20
-      # Y = +0.04
-      # Z = 0
-      #
-      # Sphere bottom = 0.04 - 0.04 = 0
-      # ============================================================
-      Pose {
-        translation -0.20 0.04 0
+      # =========================================================
+      # FRONT CASTER WHEEL
+      # =========================================================
 
-        children [
-          Shape {
-            appearance PBRAppearance {
-              baseColor 0.2 0.2 0.2
-              roughness 0.8
-            }
+      DEF CASTER_WHEEL HingeJoint {
+        jointParameters HingeJointParameters {
+          axis 0 1 0
+          anchor -0.25 0 -0.04
+        }
 
-            geometry Sphere {
-              radius 0.04
+        endPoint Solid {
+          translation -0.25 0 -0.04
+          rotation 1 0 0 1.5708
+
+          children [
+            DEF CASTER_SHAPE Shape {
+              appearance PBRAppearance {
+                baseColor 0.30 0.30 0.30
+                roughness 1
+                metalness 0
+              }
+
+              geometry Cylinder {
+                height 0.04
+                radius 0.06
+                subdivision 24
+              }
             }
+          ]
+
+          name "front_caster"
+
+          boundingObject USE CASTER_SHAPE
+
+          physics Physics {
           }
-        ]
+        }
       }
 
 
-      # ============================================================
-      # FRONT DISTANCE SENSOR
-      # ============================================================
-      DistanceSensor {
-        translation 0.26 0.08 0
-        rotation 0 1 0 1.5707963
+      # =========================================================
+      # FRONT CENTER DISTANCE SENSOR
+      # =========================================================
+      #
+      # Front = -X
+      # Sensor points straight toward -X.
+      #
+      # No Shape -> invisible.
+      #
+
+      DEF DS_FRONT DistanceSensor {
+        translation -0.27 0 0.06
+
+        rotation 0 0 1 3.14159
+
         name "ds_front"
-
-        lookupTable [
-          0 0 0
-          2 2000 0
-        ]
       }
 
 
-      # ============================================================
-      # LEFT DISTANCE SENSOR
-      # ============================================================
-      DistanceSensor {
-        translation 0.20 0.08 0.17
-        rotation 0 1 0 0.7853982
-        name "ds_left"
+      # =========================================================
+      # FRONT LEFT DISTANCE SENSOR
+      # =========================================================
+      #
+      # Front-left:
+      # -X direction
+      # +Y side
+      #
+      # No Shape -> invisible.
+      #
 
-        lookupTable [
-          0 0 0
-          2 2000 0
-        ]
+      DEF DS_FRONT_LEFT DistanceSensor {
+        translation -0.24 0.13 0.06
+
+        rotation 0 0 1 2.79159
+
+        name "ds_front_left"
       }
 
 
-      # ============================================================
-      # RIGHT DISTANCE SENSOR
-      # ============================================================
-      DistanceSensor {
-        translation 0.20 0.08 -0.17
-        rotation 0 1 0 2.3561945
-        name "ds_right"
+      # =========================================================
+      # FRONT RIGHT DISTANCE SENSOR
+      # =========================================================
+      #
+      # Front-right:
+      # -X direction
+      # -Y side
+      #
+      # No Shape -> invisible.
+      #
 
-        lookupTable [
-          0 0 0
-          2 2000 0
-        ]
+      DEF DS_FRONT_RIGHT DistanceSensor {
+        translation -0.24 -0.13 0.06
+
+        rotation 0 0 1 -2.79159
+
+        name "ds_front_right"
       }
 
 
-      # ============================================================
-      # FRONT CAMERA
-      # ============================================================
-      Camera {
-        translation 0.25 0.16 0
-        rotation 0 1 0 -1.5707963
-        name "camera"
+      # =========================================================
+      # REAR DISTANCE SENSOR
+      # =========================================================
+      #
+      # Rear = drive wheel side (+X)
+      #
+      # No Shape -> invisible.
+      #
+
+      DEF DS_REAR DistanceSensor {
+        translation 0.27 0 0.06
+
+        rotation 0 0 1 0
+
+        name "ds_rear"
+      }
+
+
+      # =========================================================
+      # CAMERA
+      # =========================================================
+      #
+      # Camera points toward the actual FRONT (-X).
+      # No visible Shape -> invisible.
+      #
+
+      DEF CAMERA Camera {
+        translation -0.18 0 0.13
+
+        rotation 0 1 0 1.5708
+
+        fieldOfView 1.0472
         width 640
         height 480
+        near 0.01
+
+        name "camera"
       }
 
 
-      # ============================================================
+      # =========================================================
+      # GPS
+      # =========================================================
+      #
+      # Located near the robot center.
+      # GPS has no visible geometry.
+      #
+
+      DEF GPS_SENSOR GPS {
+        translation 0 0 0.16
+
+        name "gps"
+      }
+
+
+      # =========================================================
       # IMU
-      # ============================================================
-      InertialUnit {
-        translation 0 0.16 0
+      # =========================================================
+      #
+      # Located near the robot center.
+      # IMU has no visible geometry.
+      #
+
+      DEF IMU_SENSOR InertialUnit {
+        translation 0 0 0.15
+
         name "imu"
       }
 
-
-      # ============================================================
-      # GPS
-      # ============================================================
-      GPS {
-        translation 0 0.16 0
-        name "gps"
-      }
     ]
 
 
-    # ============================================================
-    # ROBOT COLLISION BODY
-    #
-    # Chassis + rear caster.
-    # Wheels have their own collision bodies.
-    # ============================================================
-    boundingObject Group {
-      children [
+    # =========================================================
+    # MAIN BODY COLLISION
+    # =========================================================
 
-        Pose {
-          translation 0 0.12 0
-
-          children [
-            Box {
-              size 0.50 0.15 0.40
-            }
-          ]
-        }
-
-        Pose {
-          translation -0.20 0.04 0
-
-          children [
-            Sphere {
-              radius 0.04
-            }
-          ]
-        }
-      ]
-    }
+    boundingObject USE BODY
 
 
-    # ============================================================
+    # =========================================================
     # ROBOT PHYSICS
-    # ============================================================
+    # =========================================================
+
     physics Physics {
       density -1
-      mass 10
+      mass IS bodyMass
     }
   }
 }
-

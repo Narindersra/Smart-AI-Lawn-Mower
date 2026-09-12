@@ -1,10 +1,9 @@
 from dataclasses import dataclass
+from typing import List
 
 
 @dataclass
 class RobotPose:
-    """Current robot pose."""
-
     x: float
     z: float
     heading: float
@@ -12,15 +11,16 @@ class RobotPose:
 
 @dataclass
 class Waypoint:
-    """Navigation target waypoint."""
-
     x: float
     z: float
 
 
 @dataclass
-class MotionCommand:
-    """Differential-drive wheel velocity command."""
+class Path:
+    waypoints: List[Waypoint]
 
-    left_velocity: float
-    right_velocity: float
+
+@dataclass
+class MotionCommand:
+    linear_velocity: float
+    angular_velocity: float
