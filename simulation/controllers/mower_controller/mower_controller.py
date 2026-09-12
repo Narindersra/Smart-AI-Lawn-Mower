@@ -1,4 +1,5 @@
 import math
+import os
 import sys
 from pathlib import Path
 
@@ -116,10 +117,10 @@ HEADING_KP = 1.50
 #
 #     spacing = cutting_width * (1 - overlap)
 #
-# 0.20 * 0.90 = 0.18 m
+# 0.30 * 0.90 = 0.27 m
 # ============================================================
 
-CUTTING_WIDTH = 0.20
+CUTTING_WIDTH = 0.30
 COVERAGE_OVERLAP = 0.10
 
 
@@ -281,6 +282,8 @@ coverage_planner = CoveragePlanner(
 initialized = False
 mission_started = False
 last_print_time = -1.0
+prev_state = None
+prev_phase = None
 
 path = None
 
@@ -449,60 +452,20 @@ while robot.step(TIME_STEP) != -1:
             f"{coverage_planner.turning_clearance:.3f}m"
         )
 
-        # ----------------------------------------------------
-        # Generate coverage path from ACTUAL start pose.
-        # ----------------------------------------------------
-
-        try:
-            path = build_coverage_path(start_pose)
-
-        except Exception as error:
-            print("")
-            print("COVERAGE PATH ERROR")
-            print(error)
-            print("")
-
-            stop_motors()
-
-            navigator.state_machine.set_error()
-
-            initialized = True
-            mission_started = False
-            continue
-
-        navigator.set_path(
-            path,
-            start_pose=start_pose,
+        safe_min_x, safe_max_x, safe_min_z, safe_max_z = (
+            geofence.get_safe_bounds()
+        )
+        navigator.configure_coverage(
+            min_x=safe_min_x,
+            max_x=safe_max_x,
+            min_z=safe_min_z,
+            max_z=safe_max_z,
+            lane_spacing=coverage_planner.lane_spacing,
+            clearance=coverage_planner.total_turn_clearance,
         )
         navigator.start(
             start_pose=start_pose,
         )
-
-        print(
-            "Coverage Waypoints: "
-            f"{len(path.waypoints)}"
-        )
-
-        # ----------------------------------------------------
-        # Print first few waypoints for verification.
-        # ----------------------------------------------------
-
-        preview_count = min(
-            8,
-            len(path.waypoints),
-        )
-
-        for index in range(preview_count):
-
-            waypoint = path.waypoints[index]
-
-            print(
-                f"WP {index:03d}: "
-                f"X={waypoint.x:.3f} "
-                f"Z={waypoint.z:.3f}"
-            )
-
-        print("")
 
         initialized = True
         mission_started = True
@@ -513,13 +476,20 @@ while robot.step(TIME_STEP) != -1:
 
     if mission_started:
 
+        max_test_lanes = int(os.environ.get("WEBOTS_TEST_LANES", "0"))
+        if max_test_lanes > 0 and navigator.get_lane_index() >= max_test_lanes:
+            navigator.state_machine.set_state(NavigationState.COVERAGE_COMPLETE)
+
         state = navigator.get_state()
 
         # ----------------------------------------------------
         # Complete
         # ----------------------------------------------------
 
-        if state == NavigationState.PATH_COMPLETE:
+        if state in (
+            NavigationState.COVERAGE_COMPLETE,
+            NavigationState.PATH_COMPLETE,
+        ):
 
             stop_motors()
 
@@ -579,82 +549,42 @@ while robot.step(TIME_STEP) != -1:
             apply_motion_command(command)
         )
 
+        # ----------------------------------------------------
+        # Print discrete transition events immediately
+        # ----------------------------------------------------
+        for event in navigator.pop_events():
+            print(f"[EVENT] {event}")
+
         # ====================================================
-        # STATUS OUTPUT (Section 14)
+        # STATUS OUTPUT
         # ====================================================
 
         current_time = robot.getTime()
-        phase = navigator.lane_transition_phase
-        target_h = navigator.turn_target_heading
+        current_state = navigator.get_state()
 
-        # Print periodically or whenever in transition
-        is_transition = phase is not None
+        state_changed = (current_state != prev_state)
+        is_transition = (current_state != NavigationState.DRIVE_LANE)
         print_interval = 0.2 if is_transition else 1.0
 
         if (
             last_print_time < 0
+            or state_changed
             or current_time - last_print_time >= print_interval
         ):
+            prev_state = current_state
 
-            waypoint_index = (
-                navigator.get_current_waypoint_index()
-            )
-
-            waypoint = navigator.get_current_waypoint()
-
-            if waypoint is not None:
-
-                dx = waypoint.x - pose.x
-                dz = waypoint.z - pose.z
-
-                distance = math.hypot(
-                    dx,
-                    dz,
-                )
-
-                target_heading = navigator.get_target_heading()
-                if target_heading is not None:
-                    effective_target_h = target_heading
-                    heading_error = heading_controller.normalize_angle(
-                        target_heading - pose.heading
-                    )
-                else:
-                    heading_error = (
-                        heading_controller
-                        .calculate_heading_error(
-                            pose,
-                            waypoint,
-                        )
-                    )
-                    effective_target_h = heading_controller.normalize_angle(
-                        pose.heading + heading_error
-                    )
-
-                target_x = waypoint.x
-                target_z = waypoint.z
-
-            else:
-
-                distance = 0.0
-                heading_error = 0.0
-                effective_target_h = 0.0
-                target_x = pose.x
-                target_z = pose.z
+            lane_dir = navigator.get_lane_direction_str()
+            lane_idx = navigator.get_lane_index()
+            turn_phase = navigator.get_turn_phase()
 
             status_line = (
-                f"STATE={navigator.get_state().name} | "
-                f"WP={waypoint_index} | "
-                f"PHASE={phase or 'NORMAL'} | "
+                f"STATE={current_state.name} | "
                 f"X={pose.x:.3f} | "
                 f"Z={pose.z:.3f} | "
-                f"H={pose.heading:.3f} | "
-                f"TARGET_H={effective_target_h:.3f} | "
-                f"HE={heading_error:.3f} | "
-                f"TARGET_X={target_x:.3f} | "
-                f"TARGET_Z={target_z:.3f} | "
-                f"DIST={distance:.3f} | "
-                f"L={left_velocity:.3f} | "
-                f"R={right_velocity:.3f}"
+                f"HEADING={pose.heading:.3f} | "
+                f"LANE_DIRECTION={lane_dir} | "
+                f"LANE_INDEX={lane_idx} | "
+                f"TURN_PHASE={turn_phase}"
             )
 
             print(status_line)

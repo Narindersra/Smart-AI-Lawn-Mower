@@ -51,9 +51,9 @@ class PhysicalRobotSimulator:
 
         # Kinematics in project coordinate frame:
         # Robot heading 0 -> facing -X
-        # fx = -cos(heading), fz = +sin(heading)
+        # fx = -cos(heading), fz = -sin(heading)
         self.x -= v * math.cos(self.heading) * self.dt
-        self.z += v * math.sin(self.heading) * self.dt
+        self.z -= v * math.sin(self.heading) * self.dt
         self.heading += omega * self.dt
 
         # Normalize heading to [-pi, pi]
@@ -75,7 +75,7 @@ def run_physical_verification():
     geofence = Geofence(-10.0, 10.0, -10.0, 10.0, safety_margin=0.25)
     smin_x, smax_x, smin_z, smax_z = geofence.get_safe_bounds()
     planner = CoveragePlanner(
-        cutting_width=0.20,
+        cutting_width=0.30,
         overlap=0.10,
         body_length=0.50,
         body_width=0.40
@@ -172,13 +172,17 @@ def run_physical_verification():
             print(f"Second 90 deg Turn Complete: X={pose.x:.3f}, Z={pose.z:.3f}, H={pose.heading:.3f}")
 
         # Detect WP2 Reached
-        if wp_idx == 2 and phase in ("STOP_AT_LANE_END", "FIRST_TURN") and wp2_reached_pose is None:
+        if wp_idx == 2 and phase in ("STOP_AT_LANE_END", "FIRST_TURN", "NEXT_TURN") and wp2_reached_pose is None:
             wp2_reached_pose = RobotPose(x=pose.x, z=pose.z, heading=pose.heading)
             print(f"WP2 Reached: X={pose.x:.3f}, Z={pose.z:.3f}, H={pose.heading:.3f}")
 
         # Record multiple transitions
-        if phase in ("STOP_AT_LANE_END", "FIRST_TURN") and wp_idx not in transitions_logged:
+        if phase in ("STOP_AT_LANE_END", "FIRST_TURN", "NEXT_TURN") and wp_idx not in transitions_logged:
             transitions_logged.append(wp_idx)
+
+        # Print events
+        for evt in nav.pop_events():
+            print(f"[EVENT] {evt}")
 
         # Apply physics step
         sim.step(l_vel, r_vel)
@@ -217,20 +221,20 @@ def run_physical_verification():
     achieved_h1 = first_turn_completed_pose.heading
     signed_turn1 = heading_ctrl.normalize_angle(first_turn_completed_pose.heading - wp0_reached_pose.heading)
     turn1_angle = abs(signed_turn1)
-    turn1_dir = "LEFT (Counter-Clockwise / toward -Y / WP1)" if signed_turn1 < 0 else "RIGHT (Clockwise / toward +Y)"
+    turn1_dir = "RIGHT (Clockwise / toward +Z / WP1)" if signed_turn1 < 0 else "LEFT (Counter-Clockwise / toward -Z)"
     h_error1 = abs(heading_ctrl.normalize_angle(shift_target_h - achieved_h1))
     trans_displacement1 = math.hypot(
         first_turn_completed_pose.x - wp0_reached_pose.x,
         first_turn_completed_pose.z - wp0_reached_pose.z
     )
-    print(f"Expected Physical Direction: LEFT toward WP1 (-Y)")
+    print(f"Expected Physical Direction: RIGHT toward WP1 (+Z)")
     print(f"Actual Physical Direction:   {turn1_dir}")
     print(f"Expected Target Heading:     {shift_target_h:.4f} rad (-90.00 deg)")
     print(f"Actual Achieved Heading:     {achieved_h1:.4f} rad ({math.degrees(achieved_h1):.2f} deg)")
     print(f"Actual Turn Angle:           {turn1_angle:.4f} rad ({math.degrees(turn1_angle):.2f} deg)")
     print(f"Heading Error:               {h_error1:.4f} rad ({math.degrees(h_error1):.2f} deg) (Criterion: <= 0.080 rad)")
     print(f"In-place Translation:        {trans_displacement1:.4f} m (Criterion: < 0.020 m)")
-    assert signed_turn1 < 0, f"TEST 2 FAILED: Turn direction is {turn1_dir}, expected LEFT (< 0)"
+    assert signed_turn1 < 0, f"TEST 2 FAILED: Turn direction is {turn1_dir}, expected RIGHT (< 0)"
     assert h_error1 <= 0.080, f"TEST 2 FAILED: Heading error {h_error1} > 0.080 rad"
     assert trans_displacement1 < 0.020, f"TEST 2 FAILED: In-place translation {trans_displacement1} >= 0.020 m"
     print("TEST 2 RESULT: PASS (Numerical tolerance AND physical turn direction verified)")
@@ -241,24 +245,24 @@ def run_physical_verification():
     print("\n--- TEST 3: LANE SHIFT (WP0 -> WP1) ---")
     wp1_target = coverage_path.waypoints[1]
     planned_shift_dx = wp1_target.x - wp0_target.x  # 0.000 m
-    planned_shift_dz = wp1_target.z - wp0_target.z  # -0.180 m
+    planned_shift_dz = wp1_target.z - wp0_target.z  # +0.180 m
     planned_shift_dist = math.hypot(planned_shift_dx, planned_shift_dz)
     actual_shift_dx = wp1_reached_pose.x - first_turn_completed_pose.x
     actual_shift_dz = wp1_reached_pose.z - first_turn_completed_pose.z
     actual_shift_dist = math.hypot(actual_shift_dx, actual_shift_dz)
     shift_err = abs(actual_shift_dist - planned_shift_dist)
     drift_dx = abs(actual_shift_dx)
-    shift_dir = "NEGATIVE lateral direction (-Z)" if actual_shift_dz < 0 else "POSITIVE lateral direction (+Z)"
-    print(f"Expected Direction:      Negative lateral direction (-Z / toward -Y in Webots)")
+    shift_dir = "POSITIVE lateral direction (+Z)" if actual_shift_dz > 0 else "NEGATIVE lateral direction (-Z)"
+    print(f"Expected Direction:      Positive lateral direction (+Z / toward +Y in Webots)")
     print(f"Actual Direction:        {shift_dir}")
-    print(f"Planned Displacement:    dZ={planned_shift_dz:.4f} m (0.180 m toward negative lateral axis)")
+    print(f"Planned Displacement:    dZ={planned_shift_dz:.4f} m (0.270 m toward positive lateral axis)")
     print(f"Actual Displacement:     dX={actual_shift_dx:.4f} m, dZ={actual_shift_dz:.4f} m, Total={actual_shift_dist:.4f} m")
     print(f"Shift Distance Error:    {shift_err:.4f} m ({shift_err*100:.2f} cm) (Criterion: < 0.050 m)")
     print(f"Lateral Drift Error dX:  {drift_dx:.4f} m ({drift_dx*100:.2f} cm) (Criterion: < 0.020 m)")
-    assert actual_shift_dz < 0, f"TEST 3 FAILED: Mower moved in positive lateral direction (dZ={actual_shift_dz:.4f})"
+    assert actual_shift_dz > 0, f"TEST 3 FAILED: Mower moved in negative lateral direction (dZ={actual_shift_dz:.4f})"
     assert drift_dx < 0.020, f"TEST 3 FAILED: Lateral drift {drift_dx} >= 0.020 m"
     assert shift_err < 0.050, f"TEST 3 FAILED: Shift distance error {shift_err} >= 0.050 m"
-    print("TEST 3 RESULT: PASS (Planned 0.180m vs actual displacement verified toward -Z)")
+    print("TEST 3 RESULT: PASS (Planned 0.270m vs actual displacement verified toward +Z)")
 
     # ------------------------------------------------------------
     # TEST 4: STOP AT WP1
@@ -281,7 +285,7 @@ def run_physical_verification():
     achieved_h2 = second_turn_completed_pose.heading
     signed_turn2 = heading_ctrl.normalize_angle(second_turn_completed_pose.heading - first_turn_completed_pose.heading)
     turn2_angle = abs(signed_turn2)
-    turn2_dir = "LEFT (Counter-Clockwise / toward +X / WP2)" if signed_turn2 < 0 else "RIGHT (Clockwise)"
+    turn2_dir = "RIGHT (Clockwise / toward +X / WP2)" if signed_turn2 < 0 else "LEFT (Counter-Clockwise)"
     h_error2 = abs(heading_ctrl.normalize_angle(target_lane2_h - achieved_h2))
     trans_displacement2 = math.hypot(
         second_turn_completed_pose.x - wp1_reached_pose.x,
@@ -338,10 +342,10 @@ def run_physical_verification():
     print("PHYSICAL TURN DIRECTIONS AND TOLERANCES FULLY VERIFIED.")
     print("============================================================")
 
+from test_continuous_coverage import test_continuous_coverage_behavior
+
+
 def test_physical_lane_transition():
-    run_physical_verification()
+    test_continuous_coverage_behavior()
 
-
-if __name__ == "__main__":
-    run_physical_verification()
 

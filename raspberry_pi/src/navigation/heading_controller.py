@@ -102,7 +102,7 @@ class HeadingController:
         Therefore the forward direction is:
 
             fx = -cos(heading)
-            fy = +sin(heading)
+            fy = -sin(heading)
 
         Navigation z maps to world Y, so:
 
@@ -111,14 +111,14 @@ class HeadingController:
 
         The required heading is:
 
-            atan2(dz, -dx)
+            atan2(-dz, -dx)
         """
 
         dx = waypoint.x - pose.x
         dz = waypoint.z - pose.z
 
         return math.atan2(
-            dz,
+            -dz,
             -dx,
         )
 

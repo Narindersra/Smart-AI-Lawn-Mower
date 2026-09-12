@@ -3,13 +3,23 @@ from enum import Enum, auto
 
 class NavigationState(Enum):
     IDLE = auto()
+    DRIVE_LANE = auto()
+    APPROACH_BOUNDARY = auto()
+    STOP_AT_BOUNDARY = auto()
+    TURN_TO_SHIFT = auto()
+    SHIFT_LANE = auto()
+    STOP_AT_SHIFT = auto()
+    TURN_TO_LANE = auto()
+    COVERAGE_COMPLETE = auto()
+    STOPPED = auto()
+    ERROR = auto()
+
+    # Legacy compatibility aliases
     ALIGNING = auto()
     DRIVING = auto()
     TURNING = auto()
     WAYPOINT_REACHED = auto()
     PATH_COMPLETE = auto()
-    STOPPED = auto()
-    ERROR = auto()
 
 
 class NavigationStateMachine:
@@ -20,40 +30,23 @@ class NavigationStateMachine:
     def get_state(self):
         return self.state
 
+    def set_state(self, state: NavigationState):
+        self.state = state
+
     def start(self):
-        if self.state in (
-            NavigationState.IDLE,
-            NavigationState.STOPPED,
-            NavigationState.WAYPOINT_REACHED,
-            NavigationState.TURNING,
-        ):
-            self.state = NavigationState.ALIGNING
+        self.state = NavigationState.DRIVE_LANE
 
     def start_driving(self):
-        if self.state in (
-            NavigationState.ALIGNING,
-            NavigationState.TURNING,
-        ):
-            self.state = NavigationState.DRIVING
+        self.state = NavigationState.DRIVE_LANE
 
     def start_turning(self):
-        if self.state in (
-            NavigationState.ALIGNING,
-            NavigationState.DRIVING,
-            NavigationState.WAYPOINT_REACHED,
-        ):
-            self.state = NavigationState.TURNING
+        self.state = NavigationState.TURN_TO_SHIFT
 
     def waypoint_reached(self):
-        if self.state in (
-            NavigationState.ALIGNING,
-            NavigationState.DRIVING,
-            NavigationState.TURNING,
-        ):
-            self.state = NavigationState.WAYPOINT_REACHED
+        self.state = NavigationState.STOP_AT_BOUNDARY
 
     def path_complete(self):
-        self.state = NavigationState.PATH_COMPLETE
+        self.state = NavigationState.COVERAGE_COMPLETE
 
     def stop(self):
         self.state = NavigationState.STOPPED
@@ -66,6 +59,7 @@ class NavigationStateMachine:
 
     def is_terminal(self):
         return self.state in (
+            NavigationState.COVERAGE_COMPLETE,
             NavigationState.PATH_COMPLETE,
             NavigationState.STOPPED,
             NavigationState.ERROR,

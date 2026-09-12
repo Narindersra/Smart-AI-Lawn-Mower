@@ -47,7 +47,7 @@ class CoveragePlanner:
 
     def __init__(
         self,
-        cutting_width=0.20,
+        cutting_width=0.30,
         overlap=0.10,
         body_length=0.50,
         body_width=0.40,
@@ -318,6 +318,85 @@ class CoveragePlanner:
         return lanes
 
     # ============================================================
+    # GEOMETRY-DRIVEN LANE GENERATION
+    # ============================================================
+
+    def generate_lanes(
+        self,
+        start_x,
+        start_z,
+        min_x,
+        max_x,
+        min_z,
+        max_z,
+    ):
+        """
+        Dynamically calculate parallel boustrophedon mowing lanes from
+        the lawn boundaries and mower geometry.
+
+        Each lane is represented by its start and end endpoints:
+            ((x_start, z), (x_end, z))
+        """
+        self._validate_bounds(min_x, max_x, min_z, max_z)
+        if not (min_z <= start_z <= max_z):
+            raise ValueError("start_z is outside the coverage area.")
+
+        turn_min_x, turn_max_x = self._calculate_turning_bounds(
+            min_x, max_x
+        )
+
+        spacing = self.lane_spacing
+
+        # Generate Z levels progressing upward (+Z) across the safe lawn bounds
+        z_levels = [start_z]
+        z = start_z + spacing
+        while z <= max_z:
+            z_levels.append(round(z, 6))
+            z += spacing
+
+        # Boundary clipping: ensure top boundary is fully covered
+        if max_z - z_levels[-1] > 1e-4:
+            z_levels.append(max_z)
+
+        # If starting point left any uncut space below start_z
+        lower_levels = []
+        z = start_z - spacing
+        while z >= min_z:
+            lower_levels.append(round(z, 6))
+            z -= spacing
+        if lower_levels and (lower_levels[-1] - min_z > 1e-4):
+            lower_levels.append(min_z)
+
+        all_z_levels = z_levels + lower_levels
+
+        lanes = []
+
+        # Determine initial mowing direction from start_x
+        distance_to_min = abs(start_x - turn_min_x)
+        distance_to_max = abs(turn_max_x - start_x)
+        first_end_x = turn_min_x if distance_to_min >= distance_to_max else turn_max_x
+
+        # Lane 0: mowing from initial start_x to first_end_x at start_z
+        lanes.append(
+            ((start_x, start_z), (first_end_x, start_z))
+        )
+        current_x = first_end_x
+
+        # Subsequent parallel lanes with alternating X mowing directions
+        for lane_z in all_z_levels[1:]:
+            next_end_x = (
+                turn_max_x
+                if abs(current_x - turn_min_x) <= 1e-6
+                else turn_min_x
+            )
+            lanes.append(
+                ((current_x, lane_z), (next_end_x, lane_z))
+            )
+            current_x = next_end_x
+
+        return lanes
+
+    # ============================================================
     # COVERAGE PATH
     # ============================================================
 
@@ -331,230 +410,47 @@ class CoveragePlanner:
         max_z,
     ):
         """
-        Generate the complete boustrophedon coverage path.
-
-        The path is represented using lane endpoints.
-
-        Example:
-
-            Lane 1:
-                START -----------------> WP0
-
-            Transition:
-                                      |
-                                      | 0.18 m
-                                      v
-                                     WP1
-
-            Lane 2:
-                WP1 <------------------ WP2
-
-            Transition:
-                                      |
-                                      | 0.18 m
-                                      v
-                                     WP3
-
-            Lane 3:
-                WP3 -----------------> WP4
-
-        The Navigator is responsible for executing the physical
-        lane transition:
-
-            90 degree rotation
-            ->
-            one lane spacing
-            ->
-            90 degree rotation
-
-        The planner only defines the geometric waypoint positions.
+        Generate the complete boustrophedon coverage path by connecting
+        dynamically planned lane endpoints into waypoints for Navigator.
         """
-
-        self._validate_bounds(
+        lanes = self.generate_lanes(
+            start_x,
+            start_z,
             min_x,
             max_x,
             min_z,
             max_z,
         )
 
-        if not (
-            min_z <= start_z <= max_z
-        ):
-            raise ValueError(
-                "start_z is outside the coverage area."
-            )
-
-        # --------------------------------------------------------
-        # Safe X positions for lane endpoints.
-        # --------------------------------------------------------
-
-        (
-            turn_min_x,
-            turn_max_x,
-        ) = self._calculate_turning_bounds(
-            min_x,
-            max_x,
-        )
-
-        # --------------------------------------------------------
-        # Generate all lane positions.
-        # --------------------------------------------------------
-
-        lower_lanes = (
-            self._generate_lower_lanes(
-                start_z,
-                min_z,
-            )
-        )
-
-        upper_lanes = (
-            self._generate_upper_lanes(
-                start_z,
-                max_z,
-            )
-        )
+        if not lanes:
+            return Path(waypoints=[])
 
         waypoints = []
 
-        # ========================================================
-        # FIRST LANE
-        # ========================================================
-
-        # Determine which X endpoint is closest to the current
-        # robot position.
-
-        distance_to_min = abs(
-            start_x - turn_min_x
+        # WP0 is the endpoint of the initial mowing lane (Lane 0)
+        waypoints.append(
+            Waypoint(
+                x=lanes[0][1][0],
+                z=lanes[0][1][1],
+            )
         )
 
-        distance_to_max = abs(
-            turn_max_x - start_x
-        )
-
-        if distance_to_min >= distance_to_max:
-            first_end_x = turn_min_x
-        else:
-            first_end_x = turn_max_x
-
-        # --------------------------------------------------------
-        # First lane endpoint.
-        #
-        # This is WP0.
-        # --------------------------------------------------------
-
-        if abs(
-            first_end_x - start_x
-        ) > 1e-9:
-
+        # For every subsequent lane:
+        # - Add lane-shift transition waypoint (start of lane, at new Z)
+        # - Add mowing lane endpoint (end of lane, after crossing lawn)
+        for lane in lanes[1:]:
             waypoints.append(
                 Waypoint(
-                    x=first_end_x,
-                    z=start_z,
+                    x=lane[0][0],
+                    z=lane[0][1],
                 )
             )
-
-        current_x = first_end_x
-
-        # ========================================================
-        # LOWER (-Z) LANES
-        # ========================================================
-
-        for lane_z in lower_lanes:
-
-            # ----------------------------------------------------
-            # Next lane START.
-            #
-            # Same X as previous lane END.
-            #
-            # Example:
-            #
-            #     WP0 (-9.34, 0.26)
-            #     WP1 (-9.34, 0.08)
-            #
-            # Navigator performs:
-            #
-            #     90 degree turn
-            #     0.18 m lane shift
-            #     90 degree turn
-            # ----------------------------------------------------
-
             waypoints.append(
                 Waypoint(
-                    x=current_x,
-                    z=lane_z,
+                    x=lane[1][0],
+                    z=lane[1][1],
                 )
             )
-
-            # ----------------------------------------------------
-            # Alternate mowing direction.
-            # ----------------------------------------------------
-
-            if abs(
-                current_x - turn_min_x
-            ) <= 1e-9:
-
-                next_end_x = turn_max_x
-
-            else:
-
-                next_end_x = turn_min_x
-
-            # ----------------------------------------------------
-            # Next lane END.
-            # ----------------------------------------------------
-
-            waypoints.append(
-                Waypoint(
-                    x=next_end_x,
-                    z=lane_z,
-                )
-            )
-
-            current_x = next_end_x
-
-        # ========================================================
-        # UPPER (+Z) LANES
-        # ========================================================
-
-        for lane_z in upper_lanes:
-
-            # ----------------------------------------------------
-            # Next lane START.
-            # ----------------------------------------------------
-
-            waypoints.append(
-                Waypoint(
-                    x=current_x,
-                    z=lane_z,
-                )
-            )
-
-            # ----------------------------------------------------
-            # Alternate mowing direction.
-            # ----------------------------------------------------
-
-            if abs(
-                current_x - turn_min_x
-            ) <= 1e-9:
-
-                next_end_x = turn_max_x
-
-            else:
-
-                next_end_x = turn_min_x
-
-            # ----------------------------------------------------
-            # Next lane END.
-            # ----------------------------------------------------
-
-            waypoints.append(
-                Waypoint(
-                    x=next_end_x,
-                    z=lane_z,
-                )
-            )
-
-            current_x = next_end_x
 
         return Path(
             waypoints=waypoints
