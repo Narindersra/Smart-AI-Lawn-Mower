@@ -66,7 +66,7 @@ class Odometry:
         self.heading += heading_delta
 
         self.x -= distance_delta * math.cos(self.heading)
-        self.z += distance_delta * math.sin(self.heading)
+        self.z -= distance_delta * math.sin(self.heading)
 
         self.previous_left_distance = left_distance
         self.previous_right_distance = right_distance

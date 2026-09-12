@@ -5,6 +5,7 @@ class NavigationState(Enum):
     IDLE = auto()
     ALIGNING = auto()
     DRIVING = auto()
+    TURNING = auto()
     WAYPOINT_REACHED = auto()
     PATH_COMPLETE = auto()
     STOPPED = auto()
@@ -24,17 +25,30 @@ class NavigationStateMachine:
             NavigationState.IDLE,
             NavigationState.STOPPED,
             NavigationState.WAYPOINT_REACHED,
+            NavigationState.TURNING,
         ):
             self.state = NavigationState.ALIGNING
 
     def start_driving(self):
-        if self.state == NavigationState.ALIGNING:
+        if self.state in (
+            NavigationState.ALIGNING,
+            NavigationState.TURNING,
+        ):
             self.state = NavigationState.DRIVING
+
+    def start_turning(self):
+        if self.state in (
+            NavigationState.ALIGNING,
+            NavigationState.DRIVING,
+            NavigationState.WAYPOINT_REACHED,
+        ):
+            self.state = NavigationState.TURNING
 
     def waypoint_reached(self):
         if self.state in (
             NavigationState.ALIGNING,
             NavigationState.DRIVING,
+            NavigationState.TURNING,
         ):
             self.state = NavigationState.WAYPOINT_REACHED
 
