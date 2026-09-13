@@ -95,9 +95,9 @@ MAX_WHEEL_VELOCITY = 10.0
 # NAVIGATION PARAMETERS
 # ============================================================
 
-POSITION_TOLERANCE = 0.05
+POSITION_TOLERANCE = 0.01
 
-HEADING_TOLERANCE = 0.08
+HEADING_TOLERANCE = 0.008
 
 MAX_LINEAR_SPEED = 0.50
 MIN_LINEAR_SPEED = 0.10
@@ -117,11 +117,11 @@ HEADING_KP = 1.50
 #
 #     spacing = cutting_width * (1 - overlap)
 #
-# 0.30 * 0.90 = 0.27 m
+# 0.30 * 1.00 = 0.300 m
 # ============================================================
 
 CUTTING_WIDTH = 0.30
-COVERAGE_OVERLAP = 0.10
+COVERAGE_OVERLAP = 0.0
 
 
 # ============================================================
@@ -460,7 +460,8 @@ while robot.step(TIME_STEP) != -1:
             max_x=safe_max_x,
             min_z=safe_min_z,
             max_z=safe_max_z,
-            lane_spacing=coverage_planner.lane_spacing,
+            blade_width=CUTTING_WIDTH,
+            overlap=COVERAGE_OVERLAP,
             clearance=coverage_planner.total_turn_clearance,
         )
         navigator.start(

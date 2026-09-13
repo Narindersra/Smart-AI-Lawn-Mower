@@ -48,7 +48,7 @@ class CoveragePlanner:
     def __init__(
         self,
         cutting_width=0.30,
-        overlap=0.10,
+        overlap=0.0,
         body_length=0.50,
         body_width=0.40,
     ):

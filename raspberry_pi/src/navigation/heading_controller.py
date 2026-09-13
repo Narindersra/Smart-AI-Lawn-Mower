@@ -31,8 +31,9 @@ class HeadingController:
     def __init__(
         self,
         max_angular_speed=0.8,
-        heading_tolerance=0.08,
+        heading_tolerance=0.008,
         heading_kp=1.5,
+        min_angular_speed=0.06,
     ):
         if max_angular_speed <= 0:
             raise ValueError(
@@ -59,6 +60,10 @@ class HeadingController:
 
         self.heading_kp = float(
             abs(heading_kp)
+        )
+
+        self.min_angular_speed = float(
+            abs(min_angular_speed)
         )
 
     # ============================================================
@@ -181,45 +186,36 @@ class HeadingController:
     def calculate_angular_velocity(
         self,
         heading_error,
+        in_turn=False,
     ):
         """
         Convert heading error into angular velocity.
 
         IMPORTANT:
-
-        The Webots IMU yaw direction and the project's
-        differential-drive angular convention require the
-        control sign to be inverted.
-
-            angular_velocity =
-                -Kp * heading_error
-
-        The result is limited to the configured maximum.
+        The Webots IMU yaw direction and the project's differential-drive
+        angular convention require the angular control sign to be inverted.
         """
+        error = self.normalize_angle(heading_error)
 
-        error = self.normalize_angle(
-            heading_error
-        )
-
-        # Small deadband to prevent chatter while allowing fine tracking
-        if abs(error) <= 0.001:
+        if in_turn and abs(error) <= self.heading_tolerance:
             return 0.0
 
-        # Proportional angular control:
-        angular_velocity = (
-            -self.heading_kp * error
-        )
+        if not in_turn and abs(error) <= 0.0005:
+            return 0.0
 
-        # Saturation.
-        angular_velocity = max(
-            -self.max_angular_speed,
-            min(
-                self.max_angular_speed,
-                angular_velocity,
-            ),
-        )
-
-        return angular_velocity
+        if in_turn:
+            mag = self.heading_kp * abs(error)
+            if self.min_angular_speed > 0:
+                mag = max(self.min_angular_speed, mag)
+            mag = min(self.max_angular_speed, mag)
+            return -math.copysign(mag, error)
+        else:
+            # Smooth proportional steering during linear movement
+            omega = -self.heading_kp * error
+            return max(
+                -self.max_angular_speed,
+                min(self.max_angular_speed, omega),
+            )
 
     # ============================================================
     # UPDATE

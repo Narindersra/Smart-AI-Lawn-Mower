@@ -42,21 +42,26 @@ class Navigator:
 
         self.state_machine = NavigationStateMachine()
 
-        # Coverage geometry parameters
+        # Coverage geometry parameters derived from blade width
         self.min_x = -9.75
         self.max_x = 9.75
         self.min_z = -9.75
         self.max_z = 9.75
-        self.lane_spacing = 0.27
+        self.blade_width = 0.30
+        self.overlap = 0.0
+        self.lane_spacing = self.blade_width * (1.0 - self.overlap)  # exactly 0.300 m
         self.clearance = 0.32
         self.slowdown_distance = 0.60
 
         # Current lane tracking
         self.lane_index = 0
         self.lane_direction = -1  # -1 for -X, +1 for +X
+        self.previous_lane_z = None
         self.desired_lane_z = None
         self.turn_target_heading = None
+        self.turn_start_heading = None
         self.turn_phase = "NONE"
+        self.actual_spacing = 0.0
 
         # Complete stop hold logic
         self.stop_hold_counter = 0
@@ -75,16 +80,23 @@ class Navigator:
         max_x=9.75,
         min_z=-9.75,
         max_z=9.75,
-        lane_spacing=0.27,
+        blade_width=0.30,
+        overlap=0.0,
+        lane_spacing=None,
         clearance=0.32,
         slowdown_distance=0.60,
     ):
-        """Configure coverage boundaries and geometry."""
+        """Configure coverage boundaries and geometry mathematically from blade width."""
         self.min_x = float(min_x)
         self.max_x = float(max_x)
         self.min_z = float(min_z)
         self.max_z = float(max_z)
-        self.lane_spacing = float(lane_spacing)
+        self.blade_width = float(blade_width)
+        self.overlap = float(overlap)
+        if lane_spacing is not None:
+            self.lane_spacing = float(lane_spacing)
+        else:
+            self.lane_spacing = self.blade_width * (1.0 - self.overlap)
         self.clearance = float(clearance)
         self.slowdown_distance = float(slowdown_distance)
 
@@ -163,17 +175,21 @@ class Navigator:
         """Start coverage navigation from robot's initial pose."""
         if start_pose is not None:
             self.desired_lane_z = float(start_pose.z)
+            self.previous_lane_z = float(start_pose.z)
             # Determine initial mowing direction toward the farthest safe boundary
             dist_to_min = abs(start_pose.x - self.safe_min_x)
             dist_to_max = abs(self.safe_max_x - start_pose.x)
             self.lane_direction = -1 if dist_to_min >= dist_to_max else +1
         else:
             self.desired_lane_z = self.min_z + self.clearance
+            self.previous_lane_z = self.desired_lane_z
             self.lane_direction = -1
 
         self.lane_index = 0
         self.turn_target_heading = None
+        self.turn_start_heading = None
         self.turn_phase = "NONE"
+        self.actual_spacing = 0.0
         self.stop_hold_counter = 0
 
         self.state_machine.set_state(NavigationState.DRIVE_LANE)
@@ -195,10 +211,10 @@ class Navigator:
         # 1. DRIVE_LANE: Full speed line driving with cross-track tracking
         # ========================================================
         if state == NavigationState.DRIVE_LANE:
-            # Cross-track error to maintain desired_lane_z
+            # Cross-track error to maintain desired_lane_z strictly parallel
             lane_error = self.desired_lane_z - pose.z
             v_x = float(self.lane_direction)
-            v_z = max(-0.15, min(0.15, 0.80 * lane_error))
+            v_z = max(-0.10, min(0.10, 0.80 * lane_error))
             target_h = math.atan2(-v_z, -v_x)
 
             heading_error = self.heading_controller.normalize_angle(
@@ -229,7 +245,7 @@ class Navigator:
         if state == NavigationState.APPROACH_BOUNDARY:
             lane_error = self.desired_lane_z - pose.z
             v_x = float(self.lane_direction)
-            v_z = max(-0.15, min(0.15, 0.80 * lane_error))
+            v_z = max(-0.10, min(0.10, 0.80 * lane_error))
             target_h = math.atan2(-v_z, -v_x)
 
             heading_error = self.heading_controller.normalize_angle(
@@ -242,12 +258,12 @@ class Navigator:
             if self.lane_direction == -1:
                 dist_to_boundary = pose.x - self.safe_min_x
                 boundary_reached = (
-                    pose.x <= self.safe_min_x or dist_to_boundary <= 0.02
+                    pose.x <= self.safe_min_x or dist_to_boundary <= 0.01
                 )
             else:
                 dist_to_boundary = self.safe_max_x - pose.x
                 boundary_reached = (
-                    pose.x >= self.safe_max_x or dist_to_boundary <= 0.02
+                    pose.x >= self.safe_max_x or dist_to_boundary <= 0.01
                 )
 
             # Smooth deceleration
@@ -279,22 +295,25 @@ class Navigator:
             self.stop_hold_counter += 1
             if self.stop_hold_counter >= self.stop_hold_cycles:
                 # Check if entire lawn area is covered
+                max_usable_z = self.max_z - self.clearance
                 next_z = self.desired_lane_z + self.lane_spacing
-                if (
-                    next_z > self.max_z
-                    and abs(self.desired_lane_z - self.max_z) < 1e-3
-                ):
-                    self.state_machine.set_state(
-                        NavigationState.COVERAGE_COMPLETE
-                    )
-                    self._emit_event("COVERAGE_COMPLETE")
-                    return MotionCommand(
-                        linear_velocity=0.0, angular_velocity=0.0
-                    )
+                if next_z > max_usable_z:
+                    if abs(self.desired_lane_z - max_usable_z) < 0.05:
+                        self.state_machine.set_state(
+                            NavigationState.COVERAGE_COMPLETE
+                        )
+                        self._emit_event("COVERAGE_COMPLETE")
+                        return MotionCommand(
+                            linear_velocity=0.0, angular_velocity=0.0
+                        )
+                    else:
+                        next_z = max_usable_z
 
-                self.desired_lane_z = min(self.max_z, next_z)
+                self.previous_lane_z = self.desired_lane_z
+                self.desired_lane_z = next_z
                 # Target shift heading pointing along +Z: atan2(-1, 0) = -pi/2
                 self.turn_target_heading = -math.pi / 2.0
+                self.turn_start_heading = pose.heading
                 self.turn_phase = "TURN_TO_SHIFT"
                 self.state_machine.set_state(NavigationState.TURN_TO_SHIFT)
                 self._emit_event("TURN_TO_SHIFT")
@@ -311,6 +330,11 @@ class Navigator:
                 self.turn_target_heading - pose.heading
             )
             if abs(heading_error) <= self.heading_controller.heading_tolerance:
+                self.turn1_angle = abs(
+                    self.heading_controller.normalize_angle(
+                        pose.heading - self.turn_start_heading
+                    )
+                )
                 self.turn_target_heading = None
                 self.turn_phase = "SHIFT"
                 self.state_machine.set_state(NavigationState.SHIFT_LANE)
@@ -320,8 +344,9 @@ class Navigator:
                 )
 
             omega = self.heading_controller.calculate_angular_velocity(
-                heading_error
+                heading_error, in_turn=True
             )
+            # Pure in-place rotation: linear velocity MUST be zero
             return MotionCommand(linear_velocity=0.0, angular_velocity=omega)
 
         # ========================================================
@@ -330,14 +355,14 @@ class Navigator:
         if state == NavigationState.SHIFT_LANE:
             # Remaining lateral distance to desired_lane_z
             dz_remaining = self.desired_lane_z - pose.z
-            # Keep X on boundary line during shift
+            # Keep X on boundary line during shift to eliminate diagonal drift
             bound_x = (
                 self.safe_min_x
                 if self.lane_direction == -1
                 else self.safe_max_x
             )
             dx_error = bound_x - pose.x
-            v_x = max(-0.15, min(0.15, 0.50 * dx_error))
+            v_x = max(-0.08, min(0.08, 0.80 * dx_error))
             v_z = 1.0  # along +Z
             target_h = math.atan2(-v_z, -v_x)
 
@@ -348,7 +373,13 @@ class Navigator:
                 heading_error
             )
 
-            if dz_remaining <= 0.03 or pose.z >= self.desired_lane_z - 0.01:
+            # Proportional deceleration as robot nears desired_lane_z for millimeter precision stop
+            if dz_remaining > 0.08:
+                speed = 0.20
+            else:
+                speed = max(0.04, 0.20 * (dz_remaining / 0.08))
+
+            if dz_remaining <= 0.001 or pose.z >= self.desired_lane_z:
                 self.state_machine.set_state(NavigationState.STOP_AT_SHIFT)
                 self.stop_hold_counter = 0
                 self._emit_event("SHIFT_COMPLETE")
@@ -357,7 +388,6 @@ class Navigator:
                     linear_velocity=0.0, angular_velocity=0.0
                 )
 
-            speed = 0.25
             return MotionCommand(
                 linear_velocity=speed, angular_velocity=omega
             )
@@ -368,6 +398,7 @@ class Navigator:
         if state == NavigationState.STOP_AT_SHIFT:
             self.stop_hold_counter += 1
             if self.stop_hold_counter >= self.stop_hold_cycles:
+                self.actual_spacing = abs(pose.z - self.previous_lane_z)
                 # Reverse lane direction for next lane
                 self.lane_direction = -self.lane_direction
                 self.lane_index += 1
@@ -375,6 +406,7 @@ class Navigator:
                 self.turn_target_heading = (
                     math.pi if self.lane_direction == 1 else 0.0
                 )
+                self.turn_start_heading = pose.heading
                 self.turn_phase = "TURN_TO_LANE"
                 self.state_machine.set_state(NavigationState.TURN_TO_LANE)
                 self._emit_event("TURN_TO_LANE")
@@ -391,6 +423,26 @@ class Navigator:
                 self.turn_target_heading - pose.heading
             )
             if abs(heading_error) <= self.heading_controller.heading_tolerance:
+                turn2_angle = abs(
+                    self.heading_controller.normalize_angle(
+                        pose.heading - self.turn_start_heading
+                    )
+                )
+                h_err2 = abs(heading_error)
+
+                # Format and emit mandatory telemetry
+                telemetry = (
+                    f"LANE={self.lane_index} | "
+                    f"PREV_Z={self.previous_lane_z:.3f} | "
+                    f"TARGET_Z={self.desired_lane_z:.3f} | "
+                    f"ACTUAL_Z={pose.z:.3f} | "
+                    f"SPACING={self.actual_spacing:.3f} | "
+                    f"TARGET_H={self.turn_target_heading:.4f} | "
+                    f"ACTUAL_H={pose.heading:.4f} | "
+                    f"HEADING_ERROR={math.degrees(h_err2):.2f}° | "
+                    f"TURN_ANGLE={math.degrees(turn2_angle):.2f}°"
+                )
+                self._emit_event(f"TELEMETRY {telemetry}")
                 self.turn_target_heading = None
                 self.turn_phase = "NONE"
                 self.state_machine.set_state(NavigationState.DRIVE_LANE)
@@ -402,8 +454,9 @@ class Navigator:
                 )
 
             omega = self.heading_controller.calculate_angular_velocity(
-                heading_error
+                heading_error, in_turn=True
             )
+            # Pure in-place rotation
             return MotionCommand(linear_velocity=0.0, angular_velocity=omega)
 
         # ========================================================
