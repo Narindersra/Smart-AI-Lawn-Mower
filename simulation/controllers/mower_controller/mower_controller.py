@@ -283,9 +283,8 @@ initialized = False
 mission_started = False
 last_print_time = -1.0
 prev_state = None
-prev_phase = None
-
 path = None
+telemetry_file = None
 
 
 # ============================================================
@@ -468,6 +467,11 @@ while robot.step(TIME_STEP) != -1:
             start_pose=start_pose,
         )
 
+        telemetry_path = PROJECT_ROOT / "webots_telemetry.csv"
+        telemetry_file = open(telemetry_path, "w", buffering=1, encoding="utf-8")
+        telemetry_file.write("time,x,z,heading,state,lane_index,turn_phase,left_vel,right_vel,lane_dir\n")
+        telemetry_file.flush()
+
         initialized = True
         mission_started = True
 
@@ -554,14 +558,24 @@ while robot.step(TIME_STEP) != -1:
         # Print discrete transition events immediately
         # ----------------------------------------------------
         for event in navigator.pop_events():
-            print(f"[EVENT] {event}")
+            print(f"[EVENT] {event}", flush=True)
+
+        current_time = robot.getTime()
+        current_state = navigator.get_state()
+        lane_dir = navigator.get_lane_direction_str()
+        lane_idx = navigator.get_lane_index()
+        turn_phase = navigator.get_turn_phase()
+
+        if telemetry_file:
+            telemetry_file.write(
+                f"{current_time:.4f},{pose.x:.6f},{pose.z:.6f},{pose.heading:.6f},"
+                f"{current_state.name},{lane_idx},{turn_phase},{left_velocity:.4f},{right_velocity:.4f},{lane_dir}\n"
+            )
+            telemetry_file.flush()
 
         # ====================================================
         # STATUS OUTPUT
         # ====================================================
-
-        current_time = robot.getTime()
-        current_state = navigator.get_state()
 
         state_changed = (current_state != prev_state)
         is_transition = (current_state != NavigationState.DRIVE_LANE)
@@ -574,10 +588,6 @@ while robot.step(TIME_STEP) != -1:
         ):
             prev_state = current_state
 
-            lane_dir = navigator.get_lane_direction_str()
-            lane_idx = navigator.get_lane_index()
-            turn_phase = navigator.get_turn_phase()
-
             status_line = (
                 f"STATE={current_state.name} | "
                 f"X={pose.x:.3f} | "
@@ -588,7 +598,7 @@ while robot.step(TIME_STEP) != -1:
                 f"TURN_PHASE={turn_phase}"
             )
 
-            print(status_line)
+            print(status_line, flush=True)
 
             last_print_time = current_time
 
@@ -598,3 +608,5 @@ while robot.step(TIME_STEP) != -1:
 # ============================================================
 
 stop_motors()
+if telemetry_file:
+    telemetry_file.close()

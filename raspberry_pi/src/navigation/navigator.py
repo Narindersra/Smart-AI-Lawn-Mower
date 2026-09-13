@@ -53,6 +53,19 @@ class Navigator:
         self.clearance = 0.32
         self.slowdown_distance = 0.60
 
+        # Pure Pursuit geometric path tracking parameters
+        # Derived from physical wheel track T = 0.44 m
+        self.lookahead_distance = 0.44
+        self.max_curvature = 2.5  # rad/m
+        self.max_angular_accel = 5.0  # rad/s^2
+        self.dt = 0.016
+        self.prev_omega = 0.0
+
+        # Coverage quality metrics
+        self.max_cross_track_error = 0.0
+        self.sum_cross_track_error = 0.0
+        self.count_cross_track_error = 0
+
         # Current lane tracking
         self.lane_index = 0
         self.lane_direction = -1  # -1 for -X, +1 for +X
@@ -73,6 +86,162 @@ class Navigator:
         # Legacy compatibility attributes
         self.path = None
         self.current_waypoint_index = 0
+
+    def calculate_lookahead_point(self, p1, p2, robot_pos, lookahead_distance=None):
+        """
+        Calculate forward lookahead point on segment p1 -> p2 using quadratic
+        circle-line segment intersection:
+            ||P(t) - robot_pos||^2 = L_d^2,  where P(t) = P1 + t * (P2 - P1)
+        Returns (x_look, z_look).
+        """
+        if lookahead_distance is None:
+            lookahead_distance = self.lookahead_distance
+
+        x1, z1 = p1
+        x2, z2 = p2
+        xr, zr = robot_pos
+        dx = x2 - x1
+        dz = z2 - z1
+        seg_len_sq = dx * dx + dz * dz
+        if seg_len_sq < 1e-9:
+            return (x2, z2)
+
+        # Vector from p1 to robot
+        fx = x1 - xr
+        fz = z1 - zr
+
+        a = seg_len_sq
+        b = 2.0 * (fx * dx + fz * dz)
+        c = (fx * fx + fz * fz) - (lookahead_distance * lookahead_distance)
+
+        discriminant = b * b - 4.0 * a * c
+        if discriminant >= 0:
+            sqrt_disc = math.sqrt(discriminant)
+            t1 = (-b - sqrt_disc) / (2.0 * a)
+            t2 = (-b + sqrt_disc) / (2.0 * a)
+
+            # Choose forward intersection along segment
+            if 0.0 <= t2 <= 1.0:
+                return (x1 + t2 * dx, z1 + t2 * dz)
+            elif 0.0 <= t1 <= 1.0 and t2 > 1.0:
+                return (x2, z2)
+            elif t2 > 1.0:
+                return (x2, z2)
+
+        # If circle does not intersect or robot is beyond segment,
+        # project robot onto segment and look ahead along segment direction
+        proj_t = max(0.0, min(1.0, -(fx * dx + fz * dz) / seg_len_sq))
+        seg_len = math.sqrt(seg_len_sq)
+        look_t = min(1.0, proj_t + (lookahead_distance / seg_len))
+        return (x1 + look_t * dx, z1 + look_t * dz)
+
+    def transform_to_robot_frame(self, target_pos, robot_pose):
+        """
+        Transform target point (x, z) into mower's local coordinate frame.
+        Validated Webots chassis: Front = -X, Heading = 0 faces -X.
+        Returns:
+            x_fwd > 0: ahead of mower
+            y_lat > 0: to mower's left
+        """
+        tx, tz = target_pos
+        dx = tx - robot_pose.x
+        dz = tz - robot_pose.z
+        cos_h = math.cos(robot_pose.heading)
+        sin_h = math.sin(robot_pose.heading)
+
+        x_fwd = -(dx * cos_h + dz * sin_h)
+        y_lat = dx * sin_h - dz * cos_h
+        return x_fwd, y_lat
+
+    def calculate_pure_pursuit_curvature(self, target_pos, robot_pose):
+        """
+        Calculate Pure Pursuit curvature: kappa = 2 * y_lat / L_d^2
+        """
+        x_fwd, y_lat = self.transform_to_robot_frame(target_pos, robot_pose)
+        ld_actual = math.hypot(x_fwd, y_lat)
+        if ld_actual < 1e-4:
+            return 0.0, x_fwd, y_lat, 0.0
+        kappa = (2.0 * y_lat) / (ld_actual * ld_actual)
+        return kappa, x_fwd, y_lat, ld_actual
+
+    def calculate_pure_pursuit_command(
+        self,
+        p1,
+        p2,
+        robot_pose,
+        base_speed,
+        lookahead_distance=None,
+    ):
+        """
+        Continuous Pure Pursuit tracking on segment p1 -> p2:
+        1. Find lookahead point via quadratic circle-segment intersection
+        2. Transform to robot frame and compute curvature kappa = 2*y_l / Ld^2
+        3. Modulate speed based on curvature
+        4. Target heading combines segment tangent with cross-track lookahead correction,
+           preventing endpoint singularity as robot approaches segment terminus
+        5. Apply steering rate limiting
+        """
+        if lookahead_distance is None:
+            lookahead_distance = self.lookahead_distance
+
+        target_pt = self.calculate_lookahead_point(
+            p1,
+            p2,
+            (robot_pose.x, robot_pose.z),
+            lookahead_distance=lookahead_distance,
+        )
+        kappa, x_fwd, y_lat, ld_actual = self.calculate_pure_pursuit_curvature(
+            target_pt,
+            robot_pose,
+        )
+
+        # Smooth speed reduction as curvature increases
+        curvature_factor = max(
+            0.35,
+            1.0 - min(1.0, abs(kappa) / self.max_curvature),
+        )
+        speed = max(
+            self.speed_controller.min_speed,
+            base_speed * curvature_factor,
+        )
+
+        # Segment tangent in validated Webots coordinates
+        dx_seg = p2[0] - p1[0]
+        dz_seg = p2[1] - p1[1]
+        seg_heading = math.atan2(-dz_seg, -dx_seg)
+
+        # Cross-track error to segment line
+        seg_len = math.hypot(dx_seg, dz_seg)
+        if seg_len > 1e-6:
+            nx = -dz_seg / seg_len
+            nz = dx_seg / seg_len
+            cte = (robot_pose.x - p1[0]) * nx + (robot_pose.z - p1[1]) * nz
+            # Lookahead correction angle
+            correction = math.atan2(cte, lookahead_distance)
+            target_h = self.heading_controller.normalize_angle(seg_heading - correction)
+        else:
+            dx = target_pt[0] - robot_pose.x
+            dz = target_pt[1] - robot_pose.z
+            target_h = math.atan2(-dz, -dx)
+
+        heading_error = self.heading_controller.normalize_angle(
+            target_h - robot_pose.heading
+        )
+
+        raw_omega = self.heading_controller.calculate_angular_velocity(
+            heading_error
+        )
+
+        # Rate limiting to prevent angular acceleration jerk
+        max_d_omega = self.max_angular_accel * self.dt
+        d_omega = raw_omega - self.prev_omega
+        if abs(d_omega) > max_d_omega:
+            omega = self.prev_omega + math.copysign(max_d_omega, d_omega)
+        else:
+            omega = raw_omega
+        self.prev_omega = omega
+
+        return MotionCommand(linear_velocity=speed, angular_velocity=omega)
 
     def configure_coverage(
         self,
@@ -208,65 +377,57 @@ class Navigator:
             state = self.state_machine.get_state()
 
         # ========================================================
-        # 1. DRIVE_LANE: Full speed line driving with cross-track tracking
+        # 1. DRIVE_LANE: Pure-Pursuit continuous geometric lane tracking
         # ========================================================
         if state == NavigationState.DRIVE_LANE:
-            # Cross-track error to maintain desired_lane_z strictly parallel
-            lane_error = self.desired_lane_z - pose.z
-            v_x = float(self.lane_direction)
-            v_z = max(-0.10, min(0.10, 0.80 * lane_error))
-            target_h = math.atan2(-v_z, -v_x)
-
-            heading_error = self.heading_controller.normalize_angle(
-                target_h - pose.heading
-            )
-            omega = self.heading_controller.calculate_angular_velocity(
-                heading_error
-            )
-            speed = self.speed_controller.max_speed
-
-            # Boundary distance check
             if self.lane_direction == -1:
+                p_start = (self.safe_max_x, self.desired_lane_z)
+                p_end = (self.safe_min_x, self.desired_lane_z)
                 dist_to_boundary = pose.x - self.safe_min_x
             else:
+                p_start = (self.safe_min_x, self.desired_lane_z)
+                p_end = (self.safe_max_x, self.desired_lane_z)
                 dist_to_boundary = self.safe_max_x - pose.x
+
+            cmd = self.calculate_pure_pursuit_command(
+                p_start,
+                p_end,
+                pose,
+                base_speed=self.speed_controller.max_speed,
+            )
+
+            # Track cross-track error metrics
+            lane_error = abs(pose.z - self.desired_lane_z)
+            self.max_cross_track_error = max(self.max_cross_track_error, lane_error)
+            self.sum_cross_track_error += lane_error
+            self.count_cross_track_error += 1
 
             if dist_to_boundary <= self.slowdown_distance:
                 self.state_machine.set_state(NavigationState.APPROACH_BOUNDARY)
                 self._emit_event("APPROACH_BOUNDARY")
 
-            return MotionCommand(
-                linear_velocity=speed, angular_velocity=omega
-            )
+            return cmd
 
         # ========================================================
         # 2. APPROACH_BOUNDARY: Controlled deceleration to boundary
         # ========================================================
         if state == NavigationState.APPROACH_BOUNDARY:
-            lane_error = self.desired_lane_z - pose.z
-            v_x = float(self.lane_direction)
-            v_z = max(-0.10, min(0.10, 0.80 * lane_error))
-            target_h = math.atan2(-v_z, -v_x)
-
-            heading_error = self.heading_controller.normalize_angle(
-                target_h - pose.heading
-            )
-            omega = self.heading_controller.calculate_angular_velocity(
-                heading_error
-            )
-
             if self.lane_direction == -1:
+                p_start = (self.safe_max_x, self.desired_lane_z)
+                p_end = (self.safe_min_x, self.desired_lane_z)
                 dist_to_boundary = pose.x - self.safe_min_x
                 boundary_reached = (
                     pose.x <= self.safe_min_x or dist_to_boundary <= 0.01
                 )
             else:
+                p_start = (self.safe_min_x, self.desired_lane_z)
+                p_end = (self.safe_max_x, self.desired_lane_z)
                 dist_to_boundary = self.safe_max_x - pose.x
                 boundary_reached = (
                     pose.x >= self.safe_max_x or dist_to_boundary <= 0.01
                 )
 
-            # Smooth deceleration
+            # Smooth deceleration ramp
             fraction = max(
                 0.0, min(1.0, dist_to_boundary / self.slowdown_distance)
             )
@@ -275,18 +436,27 @@ class Navigator:
                 - self.speed_controller.min_speed
             )
 
+            cmd = self.calculate_pure_pursuit_command(
+                p_start,
+                p_end,
+                pose,
+                base_speed=speed,
+            )
+
+            lane_error = abs(pose.z - self.desired_lane_z)
+            self.max_cross_track_error = max(self.max_cross_track_error, lane_error)
+
             if boundary_reached:
                 self.state_machine.set_state(NavigationState.STOP_AT_BOUNDARY)
                 self.stop_hold_counter = 0
+                self.prev_omega = 0.0
                 self._emit_event("BOUNDARY_REACHED")
                 self._emit_event("STOP")
                 return MotionCommand(
                     linear_velocity=0.0, angular_velocity=0.0
                 )
 
-            return MotionCommand(
-                linear_velocity=speed, angular_velocity=omega
-            )
+            return cmd
 
         # ========================================================
         # 3. STOP_AT_BOUNDARY: Complete physical stop
@@ -311,6 +481,7 @@ class Navigator:
 
                 self.previous_lane_z = self.desired_lane_z
                 self.desired_lane_z = next_z
+                self.shift_x = pose.x
                 # Target shift heading pointing along +Z: atan2(-1, 0) = -pi/2
                 self.turn_target_heading = -math.pi / 2.0
                 self.turn_start_heading = pose.heading
@@ -350,12 +521,10 @@ class Navigator:
             return MotionCommand(linear_velocity=0.0, angular_velocity=omega)
 
         # ========================================================
-        # 5. SHIFT_LANE: Drive laterally along +Z to next lane
+        # 5. SHIFT_LANE: Lateral shift along +Z with zero X drift
         # ========================================================
         if state == NavigationState.SHIFT_LANE:
-            # Remaining lateral distance to desired_lane_z
             dz_remaining = self.desired_lane_z - pose.z
-            # Keep X on boundary line during shift to eliminate diagonal drift
             bound_x = (
                 self.safe_min_x
                 if self.lane_direction == -1
@@ -382,6 +551,7 @@ class Navigator:
             if dz_remaining <= 0.001 or pose.z >= self.desired_lane_z:
                 self.state_machine.set_state(NavigationState.STOP_AT_SHIFT)
                 self.stop_hold_counter = 0
+                self.prev_omega = 0.0
                 self._emit_event("SHIFT_COMPLETE")
                 self._emit_event("STOP")
                 return MotionCommand(

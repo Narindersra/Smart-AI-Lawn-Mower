@@ -347,25 +347,20 @@ class CoveragePlanner:
 
         spacing = self.lane_spacing
 
-        # Generate Z levels progressing upward (+Z) across the safe lawn bounds
-        z_levels = [start_z]
-        z = start_z + spacing
-        while z <= max_z:
-            z_levels.append(round(z, 6))
-            z += spacing
+        # Deterministic lane generation: lane_z(i) = round(start_z + i * spacing, 6)
+        # Prevents iterative floating-point drift over multiple passes
+        num_upper = int(math.floor((max_z - start_z) / spacing)) + 1
+        z_levels = [round(start_z + i * spacing, 6) for i in range(num_upper)]
 
         # Boundary clipping: ensure top boundary is fully covered
         if max_z - z_levels[-1] > 1e-4:
-            z_levels.append(max_z)
+            z_levels.append(round(max_z, 6))
 
         # If starting point left any uncut space below start_z
-        lower_levels = []
-        z = start_z - spacing
-        while z >= min_z:
-            lower_levels.append(round(z, 6))
-            z -= spacing
+        num_lower = int(math.floor((start_z - min_z) / spacing))
+        lower_levels = [round(start_z - (i + 1) * spacing, 6) for i in range(num_lower)]
         if lower_levels and (lower_levels[-1] - min_z > 1e-4):
-            lower_levels.append(min_z)
+            lower_levels.append(round(min_z, 6))
 
         all_z_levels = z_levels + lower_levels
 
@@ -395,6 +390,51 @@ class CoveragePlanner:
             current_x = next_end_x
 
         return lanes
+
+    def get_geometric_segments(
+        self,
+        start_x,
+        start_z,
+        min_x,
+        max_x,
+        min_z,
+        max_z,
+    ):
+        """
+        Return structured geometric segments representing both mowing lanes
+        and transitions for continuous geometric path tracking.
+        """
+        lanes = self.generate_lanes(
+            start_x,
+            start_z,
+            min_x,
+            max_x,
+            min_z,
+            max_z,
+        )
+        segments = []
+        for i, lane in enumerate(lanes):
+            p_start, p_end = lane
+            direction = -1 if p_end[0] < p_start[0] else +1
+            segments.append({
+                "type": "LANE",
+                "index": i,
+                "start": p_start,
+                "end": p_end,
+                "direction": direction,
+                "target_z": p_start[1],
+            })
+            if i < len(lanes) - 1:
+                next_start = lanes[i + 1][0]
+                segments.append({
+                    "type": "TRANSITION",
+                    "from_lane": i,
+                    "to_lane": i + 1,
+                    "start": p_end,
+                    "end": next_start,
+                    "target_x": p_end[0],
+                })
+        return segments
 
     # ============================================================
     # COVERAGE PATH
